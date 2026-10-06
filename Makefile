@@ -12,7 +12,7 @@ xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
 		$(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
 
-tinywl: tinywl.c xdg-shell-protocol.h
+SnowflakeWM: SnowflakeWM.c xdg-shell-protocol.h
 	$(CC) $(CFLAGS) \
 		-g -Wall -I. \
 		-DWLR_USE_UNSTABLE \
@@ -20,9 +20,9 @@ tinywl: tinywl.c xdg-shell-protocol.h
 		$(LIBS)
 
 clean:
-	rm -f tinywl xdg-shell-protocol.h xdg-shell-protocol.c
+	rm -f SnowflakeWM xdg-shell-protocol.h xdg-shell-protocol.c
 
-.DEFAULT_GOAL=tinywl
+.DEFAULT_GOAL=SnowflakeWM
 .PHONY: clean
 
 
