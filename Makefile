@@ -11,8 +11,10 @@ LIBS=\
 xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
 		$(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
-
-SnowflakeWM: SnowflakeWM.c xdg-shell-protocol.h
+wlr-layer-shell-unstable-v1-protocol.h:
+	$(WAYLAND_SCANNER) server-header \
+		protocol/wlr-layer-shell-unstable-v1.xml $@
+SnowflakeWM: SnowflakeWM.c xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h
 	$(CC) $(CFLAGS) \
 		-g -Wall -I. \
 		-DWLR_USE_UNSTABLE \

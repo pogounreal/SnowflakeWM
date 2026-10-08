@@ -16,6 +16,7 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
@@ -25,7 +26,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
-
+#include <wlr/types/wlr_layer_shell_v1.h>
 /* For brevity's sake, struct members are annotated where they are used. */
 enum tinywl_cursor_mode {
 	TINYWL_CURSOR_PASSTHROUGH,
@@ -40,6 +41,8 @@ struct tinywl_server {
 	struct wlr_allocator *allocator;
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
+  struct wlr_layer_shell_v1 *layer_shell;
+  struct wl_listener new_layer_surface;
 
 	struct wlr_xdg_shell *xdg_shell;
 	struct wl_listener new_xdg_surface;
@@ -101,7 +104,63 @@ struct tinywl_keyboard {
 	struct wl_listener key;
 	struct wl_listener destroy;
 };
+// 🙄
+//
+struct snow_layer {
+	struct tinywl_server *server;
+	struct wlr_layer_surface_v1 *ls;
+	struct wlr_scene_layer_surface_v1 *scene;
+	struct wl_listener commit;
+	struct wl_listener destroy;
+  struct wl_listener map;
+};
 
+static void layer_commit(struct wl_listener *l, void *data) {
+	struct snow_layer *s = wl_container_of(l, s, commit);
+	if (!s->ls->initialized) return;
+	struct wlr_box box = {0};
+	wlr_output_layout_get_box(s->server->output_layout, s->ls->output, &box);
+	wlr_scene_layer_surface_v1_configure(s->scene, &box, &box);
+}
+
+static void layer_destroy(struct wl_listener *l, void *data) {
+	struct snow_layer *s = wl_container_of(l, s, destroy);
+	wl_list_remove(&s->commit.link);
+	wl_list_remove(&s->destroy.link);
+	wl_list_remove(&s->map.link);
+  free(s);
+}
+static void layer_map(struct wl_listener *l, void *data) {
+	struct snow_layer *s = wl_container_of(l, s, map);
+	if (s->ls->current.keyboard_interactive ==
+			ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) return;
+	struct wlr_seat *seat = s->server->seat;
+	struct wlr_keyboard *kb = wlr_seat_get_keyboard(seat);
+	if (kb) {
+		wlr_seat_keyboard_notify_enter(seat, s->ls->surface,
+			kb->keycodes, kb->num_keycodes, &kb->modifiers);
+	}
+}
+static void server_new_layer_surface(struct wl_listener *listener, void *data) {
+	struct tinywl_server *server =
+		wl_container_of(listener, server, new_layer_surface);
+	struct wlr_layer_surface_v1 *ls = data;
+
+	if (!ls->output) {
+		ls->output = wlr_output_layout_get_center_output(server->output_layout);
+	}
+
+	struct snow_layer *s = calloc(1, sizeof(*s));
+	s->map.notify = layer_map;
+wl_signal_add(&ls->surface->events.map, &s->map);
+  s->server = server;
+	s->ls = ls;
+	s->scene = wlr_scene_layer_surface_v1_create(&server->scene->tree, ls);
+	s->commit.notify = layer_commit;
+	wl_signal_add(&ls->surface->events.commit, &s->commit);
+	s->destroy.notify = layer_destroy;
+	wl_signal_add(&ls->events.destroy, &s->destroy);
+}
 static void focus_toplevel(struct tinywl_toplevel *toplevel, struct wlr_surface *surface) {
 	/* Note: this function only deals with keyboard focus. */
 	if (toplevel == NULL) {
@@ -183,7 +242,13 @@ static bool handle_keybinding(struct tinywl_server *server, xkb_keysym_t sym) {
 			wl_container_of(server->toplevels.prev, next_toplevel, link);
 		focus_toplevel(next_toplevel, next_toplevel->xdg_toplevel->base->surface);
 		break;
-	case XKB_KEY_Return:
+  case XKB_KEY_d:
+    if (fork() ==0) {
+    execl("/bin/sh", "/bin/sh", "-c", "wofi --show drun", (void *)NULL);
+    _exit(1);
+    }
+    break;
+  case XKB_KEY_Return:
 		if (fork() == 0) {
 			execl("/bin/sh", "/bin/sh", "-c", "alacritty", (void *)NULL);
 			_exit(1);
@@ -213,7 +278,7 @@ static void keyboard_handle_key(
 
 	bool handled = false;
 	uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
-	if ((modifiers & WLR_MODIFIER_ALT) &&
+	if ((modifiers & WLR_MODIFIER_ALT) && // Change this to windows key WLR_MODIFIER_LOGO
 			event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		/* If alt is held down and this button was _pressed_, we attempt to
 		 * process it as a compositor keybinding. */
@@ -367,7 +432,7 @@ static struct tinywl_toplevel *desktop_toplevel_at(
 	while (tree != NULL && tree->node.data == NULL) {
 		tree = tree->node.parent;
 	}
-	return tree->node.data;
+	return tree ? tree->node.data : NULL;
 }
 
 static void reset_cursor_mode(struct tinywl_server *server) {
@@ -898,7 +963,7 @@ int main(int argc, char *argv[]) {
 	/* Creates an output layout, which a wlroots utility for working with an
 	 * arrangement of screens in a physical layout. */
 	server.output_layout = wlr_output_layout_create();
-
+wlr_xdg_output_manager_v1_create(server.wl_display, server.output_layout);
 	/* Configure a listener to be notified when new outputs are available on the
 	 * backend. */
 	wl_list_init(&server.outputs);
@@ -936,7 +1001,6 @@ int main(int argc, char *argv[]) {
 	 * images are available at all scale factors on the screen (necessary for
 	 * HiDPI support). */
 	server.cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
-
 	/*
 	 * wlr_cursor *only* displays an image on screen. It does not move around
 	 * when the pointer moves. However, we can attach input devices to it, and
@@ -991,10 +1055,16 @@ int main(int argc, char *argv[]) {
 		wl_display_destroy(server.wl_display);
 		return 1;
 	}
-
+server.layer_shell = wlr_layer_shell_v1_create(server.wl_display, 4);
+server.new_layer_surface.notify = server_new_layer_surface;
+wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
 	/* Set the WAYLAND_DISPLAY environment variable to our socket and run the
 	 * startup command if requested. */
 	setenv("WAYLAND_DISPLAY", socket, true);
+	if (fork() == 0) {
+		execl("/bin/sh", "/bin/sh", "-c", "env -u SWAYSOCK -u I3SOCK waybar", (void *)NULL);
+		_exit(1);
+	}
 	if (startup_cmd) {
 		if (fork() == 0) {
 			execl("/bin/sh", "/bin/sh", "-c", startup_cmd, (void *)NULL);
